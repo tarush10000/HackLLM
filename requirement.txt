@@ -4,7 +4,8 @@ qdrant-client
 httpx
 pypdf
 python-docx
-openai  # or google-generativeai
+google-generativeai
 tiktoken
 python-multipart
 python-dotenv
+fitz
