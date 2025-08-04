@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+qdrant-client
+httpx
+pypdf
+python-docx
+openai  # or google-generativeai
+tiktoken
+python-multipart
+python-dotenv
