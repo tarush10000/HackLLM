@@ -1,4 +1,17 @@
-def build_json_response(question: str, clauses: list):
-    # Combine clauses + decision logic (use LLM again here if needed)
-    response = f"Answer based on: {', '.join(clauses[:2])}..."  # Placeholder
-    return response
+"""
+Constructs final response using top chunks and LLM answer.
+"""
+from app.gemini import GeminiClient
+import os
+
+client = GeminiClient(os.getenv("GEMINI_API_KEYS").split(","))
+
+def build_final_response(question, top_chunks):
+    prompt = f"""
+    Use the following clauses to answer the question:
+    {'\n---\n'.join(top_chunks)}
+    
+    Question: {question}
+    Provide a detailed but concise answer. Cite the clause if possible.
+    """
+    return client.generate_response(prompt)
