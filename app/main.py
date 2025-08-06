@@ -8,14 +8,11 @@ from app.response_builder import build_final_response
 from dotenv import load_dotenv
 import os
 import requests
-import hashlib
 import uuid
 
 load_dotenv()
 BEARER_TOKEN = os.getenv("BEARER_TOKEN")
 app = FastAPI()
-
-# In-memory set for document hashes (replace with DB check in prod)
 processed_documents = set()
 
 @app.post("/api/v1/hackrx/run", response_model=QueryResponse)
@@ -25,7 +22,6 @@ async def run_query(request: QueryRequest, authorization: str = Header(...)):
 
     doc_url = request.documents
 
-    # Step 1: Download document and create identifier hash
     try:
         response = requests.get(doc_url, timeout=15)
         response.raise_for_status()
@@ -36,17 +32,13 @@ async def run_query(request: QueryRequest, authorization: str = Header(...)):
     file_name = doc_url.split("/")[-1]
     doc_id = str(uuid.uuid4())
 
-    # Step 2: Extract first 20 words for hash
     text_preview = ""
     for _, page_text in extract_text_generator(doc_url):
         text_preview = get_first_n_words(page_text, 20)
         break
 
     doc_hash = hash_pdf_metadata(file_name, file_size, text_preview)
-    if doc_hash in processed_documents:
-        print(f"[INFO] Document already processed: {file_name}")
-    else:
-        print(f"[INFO] Processing new document: {file_name}")
+    if doc_hash not in processed_documents:
         all_chunks = []
         metadata_list = []
         chunk_index = 0
@@ -61,18 +53,17 @@ async def run_query(request: QueryRequest, authorization: str = Header(...)):
                     "chunk_id": chunk_index,
                     "page_number": page_num,
                     "section_title": None,
-                    "doc_type": "policy"
+                    "doc_type": "policy",
+                    "text": chunk
                 }
                 all_chunks.append(chunk)
                 metadata_list.append(metadata)
                 chunk_index += 1
 
-        # Step 3: Embed chunks and store in vector DB
         vectors = embed_chunks(all_chunks)
         upsert_chunks(doc_id, all_chunks, vectors, metadata_list)
         processed_documents.add(doc_hash)
 
-    # Step 4: Handle questions
     answers = []
     for question in request.questions:
         query_vector = embed_chunks([question])[0]
@@ -82,3 +73,4 @@ async def run_query(request: QueryRequest, authorization: str = Header(...)):
         answers.append(final_answer)
 
     return {"answers": answers}
+
