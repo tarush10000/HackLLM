@@ -14,7 +14,7 @@ from models_db import DocumentChunk
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 COLLECTION_NAME = "document_chunks"
-VECTOR_DIM = 768  # Match your embedding size
+VECTOR_DIM = 384  # Match your embedding size
 VECTOR_NAME = "default_vector"
 DISTANCE = Distance.COSINE
 
