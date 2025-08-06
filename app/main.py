@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Header, HTTPException
 from app.models import QueryRequest, QueryResponse
 from app.pdfToText import extract_text_generator
+from app.chunkCreator import chunk_pageText
 from app.utils import clean_text, chunk_text, get_first_n_words, hash_pdf_metadata
 from app.embeddings import embed_chunks
 from app.vector_store import upsert_chunks, search_chunks
@@ -51,23 +52,25 @@ async def run_query(request: QueryRequest, authorization: str = Header(...)):
         metadata_list = []
         chunk_index = 0
 
-        for page_num, page_text in extract_text_generator(doc_url):
+        full_text = ""
+        for page_num, page_text in enumerate(extract_text_generator(doc_url), 1):
             cleaned = clean_text(page_text)
-            chunks = chunk_text(cleaned, strategy="fixed", chunk_size=200)
-            for chunk in chunks:
-                metadata = {
-                    "document_id": doc_id,
-                    "file_name": file_name,
-                    "chunk_id": chunk_index,
-                    "page_number": page_num,
-                    "section_title": None,
-                    "doc_type": "policy"
-                }
-                all_chunks.append(chunk)
-                metadata_list.append(metadata)
-                chunk_index += 1
+            full_text += "\n" + cleaned
 
-        # Step 3: Embed chunks and store in vector DB
+        chunks = chunk_pageText(full_text) 
+        for chunk in chunks:
+            metadata = {
+                "document_id": doc_id,
+                "file_name": file_name,
+                "chunk_id": chunk_index,
+                "page_number": None, 
+                "section_title": chunk["section_number"],
+                "doc_type": "policy"
+            }
+            all_chunks.append(chunk["text"])
+            metadata_list.append(metadata)
+            chunk_index += 1
+
         vectors = embed_chunks(all_chunks)
         upsert_chunks(doc_id, all_chunks, vectors, metadata_list)
         processed_documents.add(doc_hash)
