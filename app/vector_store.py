@@ -1,79 +1,78 @@
-from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, VectorParams
-from qdrant_client.models import Distance
-from uuid import uuid4
+# app/vector_store.py
 
-from database import SessionLocal
-from models_db import DocumentChunk
+print("\n\n--- EXECUTING THE CORRECT vector_store.py (VERSION WITH EXPLICIT NAMED VECTORS) ---\n\n")
 
-COLLECTION_NAME = "document_chunks"
-VECTOR_SIZE = 384  # Assuming 768-dimensional embeddings
-DISTANCE = Distance.COSINE
+import os
+import uuid
+from qdrant_client import QdrantClient, models
+from qdrant_client.models import PointStruct, Filter, Distance
 
-client = QdrantClient(host="localhost", port=6333)
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+QDRANT_PORT = os.getenv("QDRANT_PORT", 6333)
+client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 
-# Ensure collection exists
-client.recreate_collection(
-    collection_name=COLLECTION_NAME,
-    vectors_config=VectorParams(size=VECTOR_SIZE, distance=DISTANCE)
-)
+collection_name = "policy_chunks"
+VECTOR_DIM = 768
+VECTOR_NAME = "default_vector" # Using a more specific name
+
+def ensure_collection_correct():
+    """
+    Checks if the collection exists and is configured for a single, named vector.
+    If not, it recreates the collection with the correct, explicit parameters.
+    """
+    correct_vectors_config = {
+        VECTOR_NAME: models.VectorParams(size=VECTOR_DIM, distance=Distance.COSINE)
+    }
+
+    if client.collection_exists(collection_name=collection_name):
+        collection_info = client.get_collection(collection_name=collection_name)
+        if collection_info.config.params.vectors != correct_vectors_config:
+            print(f"Collection '{collection_name}' has incorrect configuration. Recreating...")
+            client.recreate_collection(
+                collection_name=collection_name,
+                vectors_config=correct_vectors_config
+            )
+    else:
+        print(f"Collection '{collection_name}' does not exist. Creating...")
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=correct_vectors_config
+        )
 
 def upsert_chunks(document_id, chunks, vectors, metadata_list):
-    db = SessionLocal()
-    try:
-        points = []
-        for i, (chunk, vector, metadata) in enumerate(zip(chunks, vectors, metadata_list)):
-            point_id = str(uuid4())
-            db_chunk = DocumentChunk(
-                document_id=metadata["document_id"],
-                file_name=metadata["file_name"],
-                chunk_id=metadata["chunk_id"],
-                page_number=metadata["page_number"],
-                section_title=metadata.get("section_title"),
-                doc_type=metadata.get("doc_type"),
-                text=chunk  # Save text in DB
-            )
-            db.add(db_chunk)
+    ensure_collection_correct()
 
-            points.append(
-                PointStruct(
-                    id=point_id,
-                    vector=vector,
-                    payload={
-                        "document_id": document_id,
-                        "text": chunk,
-                        "page_number": metadata["page_number"],
-                        "chunk_id": metadata["chunk_id"],
-                        "file_name": metadata["file_name"],
-                        "doc_type": metadata["doc_type"]
-                    }
-                )
-            )
+    points = []
+    for i, (chunk, vector, metadata) in enumerate(zip(chunks, vectors, metadata_list)):
+        if vector is None:
+            continue
+        
+        point = PointStruct(
+            id=str(uuid.uuid4()),
+            vector={VECTOR_NAME: vector},
+            payload={
+                "document_id": document_id,
+                "chunk_index": i,
+                "chunk": chunk,
+                **metadata
+            }
+        )
+        points.append(point)
 
-        client.upsert(collection_name=COLLECTION_NAME, points=points)
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        print(f"[ERROR] Failed to insert metadata or vectors: {e}")
-    finally:
-        db.close()
+    if points:
+        client.upsert(collection_name=collection_name, points=points, wait=True)
+        print(f"✅ Upserted {len(points)} points into Qdrant")
+    else:
+        print("No valid points to upsert.")
 
 def search_chunks(query_vector, filters, top_k=15):
-    conditions = []
-    for key, value in filters.items():
-        conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
-
-    q_filter = Filter(must=conditions)
-
-    search_result = client.search(
-        collection_name=COLLECTION_NAME,
-        query_vector=query_vector,
+    return client.search(
+        collection_name=collection_name,
+        query_vector=models.NamedVector(
+            name=VECTOR_NAME,
+            vector=query_vector
+        ),
         limit=top_k,
-        query_filter=q_filter
+        with_payload=True,
+        query_filter=filters
     )
-
-    top_chunks = []
-    for hit in search_result:
-        top_chunks.append(hit.payload)
-
-    return top_chunks

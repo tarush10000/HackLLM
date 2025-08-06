@@ -7,18 +7,28 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-client = GeminiClient(os.getenv("GEMINI_API_KEYS").split(","))
+
+api_keys_str = os.getenv("GOOGLE_API_KEY")
+if not api_keys_str:
+    raise ValueError("GOOGLE_API_KEY environment variable not set or empty.")
+client = GeminiClient(os.getenv("GOOGLE_API_KEY").split(","))
 
 def embed_chunks(chunks):
-    vectors = []
+    """
+    Accepts a list of text chunks, returns list of embedding vectors.
+    """
+    embeddings = []
+
     for chunk in chunks:
-        prompt = f"Return only the embedding vector (as comma-separated numbers) for this text:\n\"\"\"\n{chunk}\n\"\"\""
-        response = client.generate_response(prompt)
         try:
-            # Parse response assuming format: "0.123, -0.456, ..."
-            vector = [float(x.strip()) for x in response.split(",") if x.strip()]
-            vectors.append(vector)
+            embedding_list = client.embed_text(chunk)
+            if embedding_list:
+                embeddings.append(embedding_list[0])
+            else:
+                print(f"Warning: No embedding returned for chunk: {chunk[:30]}...")
+                embeddings.append(None)
         except Exception as e:
-            print(f"[ERROR] Parsing embedding failed for chunk: {e}")
-            vectors.append([0.0]*768)  # Fallback vector of fixed dimension
-    return vectors
+            print(f"Error embedding chunk: {chunk[:30]}... -> {e}")
+            embeddings.append(None)
+
+    return embeddings
