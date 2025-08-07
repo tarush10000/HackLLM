@@ -1,111 +1,77 @@
-# app/main.py (Fixed version)
+# app/main.py (Fixed version with proper deduplication)
 import asyncio
 from fastapi import FastAPI, Header, HTTPException
 from app.models import QueryRequest, QueryResponse
-from app.pdfToText import extract_text_generator_async
-from app.chunkCreator import chunk_pageText
-from app.utils import clean_text, get_first_n_words, hash_pdf_metadata
-from app.embeddings import embed_chunks_async
-from app.vector_store import upsert_chunks_async, search_chunks_async
+from app.document_service import document_service
 from app.response_builder import build_final_response_async
+from app.embeddings import embed_chunks_async
+from app.vector_store import search_chunks_async
 from dotenv import load_dotenv
 import os
-import aiohttp
-import uuid
 
 load_dotenv()
 BEARER_TOKEN = os.getenv("BEARER_TOKEN")
 app = FastAPI()
-processed_documents = set()
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy", 
-        "processed_documents": len(processed_documents)
-    }
+    """Health check endpoint with document stats"""
+    try:
+        stats = await document_service.get_document_stats()
+        return {
+            "status": "healthy",
+            "document_stats": stats
+        }
+    except Exception as e:
+        return {
+            "status": "healthy",
+            "document_stats": {"error": str(e)}
+        }
 
 @app.post("/api/v1/hackrx/run", response_model=QueryResponse)
 async def run_query(request: QueryRequest, authorization: str = Header(...)):
+    """Main query endpoint with intelligent document deduplication"""
+    
     if authorization != f"Bearer {BEARER_TOKEN}":
         raise HTTPException(status_code=403, detail="Invalid token")
 
     doc_url = request.documents
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(doc_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                response.raise_for_status()
-                content = await response.read()
+        # Step 1: Get document metadata for deduplication check
+        print(f"🔍 Checking document: {doc_url}")
+        file_name, file_size, first_words = await document_service.get_document_preview(doc_url)
+        
+        # Step 2: Check if document already exists in database
+        existing_doc_id = await document_service.check_document_exists(file_name, file_size, first_words)
+        
+        if existing_doc_id:
+            # Document already processed - use existing document ID
+            doc_id = existing_doc_id
+            print(f"🔄 Using existing document: {doc_id}")
+        else:
+            # New document - process it completely
+            print(f"🆕 Processing new document...")
+            doc_id = await document_service.process_new_document(doc_url, file_name, file_size, first_words)
+            print(f"✅ New document processed: {doc_id}")
+
+        # Step 3: Process all questions concurrently
+        print(f"❓ Processing {len(request.questions)} questions...")
+        tasks = [process_question_async(question, doc_id) for question in request.questions]
+        answers = await asyncio.gather(*tasks)
+
+        print(f"✅ All questions processed successfully")
+        return {"answers": answers}
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Document download failed: {str(e)}")
-
-    file_size = len(content)
-    file_name = doc_url.split("/")[-1]
-    doc_id = str(uuid.uuid4())
-
-    # Extract first page text for hash
-    text_preview = ""
-    try:
-        async for page_text in extract_text_generator_async(doc_url):
-            text_preview = get_first_n_words(page_text, 20)
-            break
-    except Exception as e:
-        print(f"Preview extraction failed: {e}")
-        text_preview = f"preview_failed_{file_size}"
-
-    doc_hash = hash_pdf_metadata(file_name, file_size, text_preview)
-    
-    if doc_hash not in processed_documents:
-        await process_document_async(doc_url, doc_id, file_name, doc_hash)
-        processed_documents.add(doc_hash)
-
-    # Process all questions concurrently
-    tasks = [process_question_async(question, doc_id) for question in request.questions]
-    answers = await asyncio.gather(*tasks)
-
-    return {"answers": answers}
-
-async def process_document_async(doc_url: str, doc_id: str, file_name: str, doc_hash: str):
-    """Process document with concurrent chunking and embedding"""
-    all_chunks = []
-    metadata_list = []
-    chunk_index = 0
-
-    # Extract all text first
-    full_text = ""
-    async for page_text in extract_text_generator_async(doc_url):
-        cleaned = clean_text(page_text)
-        full_text += "\n" + cleaned
-
-    # Create chunks
-    chunks = chunk_pageText(full_text)
-    
-    # Prepare chunks and metadata
-    chunk_texts = []
-    for chunk in chunks:
-        metadata = {
-            "document_id": doc_id,
-            "file_name": file_name,
-            "chunk_id": chunk_index,
-            "page_number": None,
-            "section_title": chunk["section_number"],
-            "doc_type": "policy"
-        }
-        chunk_texts.append(chunk["text"])
-        metadata_list.append(metadata)
-        chunk_index += 1
-
-    # Generate embeddings concurrently
-    vectors = await embed_chunks_async(chunk_texts)
-    
-    # Store in vector database
-    await upsert_chunks_async(doc_id, chunk_texts, vectors, metadata_list)
+        print(f"❌ Error in run_query: {e}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 async def process_question_async(question: str, doc_id: str) -> str:
     """Process a single question asynchronously"""
     try:
+        print(f"🤔 Processing question: {question[:50]}...")
+        
         # Generate query embedding
         query_vectors = await embed_chunks_async([question])
         query_vector = query_vectors[0]
@@ -123,14 +89,10 @@ async def process_question_async(question: str, doc_id: str) -> str:
         if not top_chunks:
             return "I couldn't find relevant information in the document to answer your question."
         
-        # Extract text from chunks - FIX: use 'chunk' instead of 'text'
+        # Extract text from chunks
         top_texts = []
         for chunk in top_chunks:
-            # Debug: print chunk keys to understand structure
-            if len(top_texts) == 0:
-                print(f"🔍 Chunk keys: {list(chunk.keys())}")
-            
-            # Try different possible field names
+            # Handle different possible field names for chunk text
             text_content = None
             if "chunk" in chunk:
                 text_content = chunk["chunk"]
@@ -139,11 +101,10 @@ async def process_question_async(question: str, doc_id: str) -> str:
             elif "content" in chunk:
                 text_content = chunk["content"]
             else:
-                # If no expected field, use the chunk itself if it's a string
                 if isinstance(chunk, str):
                     text_content = chunk
                 else:
-                    print(f"⚠️ Unknown chunk structure: {chunk}")
+                    print(f"⚠️ Unknown chunk structure: {list(chunk.keys()) if isinstance(chunk, dict) else type(chunk)}")
                     continue
             
             if text_content:
@@ -152,15 +113,27 @@ async def process_question_async(question: str, doc_id: str) -> str:
         if not top_texts:
             return "I found relevant chunks but couldn't extract text from them."
         
-        print(f"✅ Extracted {len(top_texts)} text chunks for question processing")
+        print(f"✅ Found {len(top_texts)} relevant text chunks")
         
         # Generate final answer
         final_answer = await build_final_response_async(question, top_texts)
         return final_answer
         
     except Exception as e:
-        print(f"❌ Error processing question '{question}': {e}")
+        print(f"❌ Error processing question '{question[:30]}...': {e}")
         return "I'm sorry, I encountered an error while processing your question. Please try again."
+
+@app.get("/api/v1/stats")
+async def get_system_stats():
+    """Get system statistics"""
+    try:
+        stats = await document_service.get_document_stats()
+        return {
+            "system_status": "operational",
+            "document_stats": stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Stats unavailable: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -302,6 +302,21 @@ async def search_chunks_async(query_vector, filters=None, top_k=15):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, search_operation)
 
+async def check_document_exists_async(doc_id: str) -> bool:
+    """Check if document exists in vector store"""
+    try:
+        # Try a simple search to see if we have any data for this document
+        test_vector = [0.1] * VECTOR_DIM  # Simple test vector
+        results = await search_chunks_async(
+            test_vector,
+            filters={"document_id": doc_id},
+            top_k=1
+        )
+        return len(results) > 0
+    except Exception as e:
+        print(f"❌ Error checking document existence: {e}")
+        return False
+
 # Legacy functions for backward compatibility
 def ensure_collection_correct():
     """Synchronous version for backward compatibility"""

@@ -1,5 +1,5 @@
+# app/database.py (Fixed version)
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base  # ✅ Add this
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 import os
@@ -14,4 +14,5 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-Base = declarative_base() 
+# Import Base from models_db (not create a new one)
+from app.models_db import Base
