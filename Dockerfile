@@ -27,6 +27,9 @@ RUN pip install --no-cache-dir \
 # Copy the application code
 COPY . .
 
+# Set PYTHONPATH to include the app directory
+ENV PYTHONPATH="/app:$PYTHONPATH"
+
 # Create a non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser

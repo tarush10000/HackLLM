@@ -71,7 +71,8 @@ services:
       - DATABASE_URL=postgresql://postgres:password@postgres:5432/document_chunks
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - REDIS_URL=redis://redis:6379  # Add this line
+      - REDIS_URL=redis://redis:6379
+      - PYTHONPATH=/app
     env_file:
       - .env
     depends_on:
@@ -79,7 +80,7 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
-      redis:  # Add Redis dependency
+      redis:
         condition: service_healthy
     networks:
       - app_network
@@ -88,7 +89,8 @@ services:
       sh -c "
         echo 'Waiting for services...' &&
         sleep 30 &&
-        python app/create_tables.py &&
+        cd /app &&
+        python -m app.create_tables &&
         echo 'Starting application...' &&
         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
       "
@@ -101,7 +103,7 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
-  redis_data:  # Add Redis volume
+  redis_data:
 
 networks:
   app_network:
