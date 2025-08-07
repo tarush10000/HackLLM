@@ -1,22 +1,22 @@
 """
-Handles PDF text extraction from remote URLs.
-Yields text per page to save memory.
+Async PDF text extraction from remote URLs.
 """
-# pdf_text_extractor.py
-
-import requests
+import aiohttp
 import pdfplumber
 from io import BytesIO
 
-def extract_text_generator(url):
+async def extract_text_generator_async(url):
     """
-    Yields plain text page by page from a PDF at the given URL.
+    Async generator that yields plain text page by page from a PDF at the given URL.
     """
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        pdf_file = BytesIO(response.content)
-
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                response.raise_for_status()
+                content = await response.read()
+                
+        pdf_file = BytesIO(content)
+        
         with pdfplumber.open(pdf_file) as pdf:
             for page in pdf.pages:
                 page_text = page.extract_text()

@@ -1,5 +1,25 @@
+version: '3.8'
+
 services:
-  # PostgreSQL Database
+  # Add Redis service
+  redis:
+    image: redis:7-alpine
+    container_name: redis_cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Your existing PostgreSQL service
   postgres:
     image: postgres:15
     container_name: postgres_db
@@ -14,8 +34,13 @@ services:
     networks:
       - app_network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Qdrant Vector Database
+  # Your existing Qdrant service
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant_db
@@ -30,8 +55,13 @@ services:
     environment:
       QDRANT__SERVICE__HTTP_PORT: 6333
       QDRANT__SERVICE__GRPC_PORT: 6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # FastAPI Application
+  # Update your FastAPI app service
   app:
     build: .
     container_name: fastapi_app
@@ -41,26 +71,37 @@ services:
       - DATABASE_URL=postgresql://postgres:password@postgres:5432/document_chunks
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - REDIS_URL=redis://redis:6379  # Add this line
     env_file:
       - .env
     depends_on:
-      - postgres
-      - qdrant
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:  # Add Redis dependency
+        condition: service_healthy
     networks:
       - app_network
     restart: unless-stopped
     command: >
       sh -c "
-        echo 'Starting application...' &&
+        echo 'Waiting for services...' &&
         sleep 30 &&
         python app/create_tables.py &&
-        echo 'Tables created, starting server...' &&
+        echo 'Starting application...' &&
         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
       "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   postgres_data:
   qdrant_data:
+  redis_data:  # Add Redis volume
 
 networks:
   app_network:
