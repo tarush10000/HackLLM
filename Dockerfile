@@ -3,17 +3,26 @@ FROM python:3.10
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including wget for health checks
 RUN apt-get update && apt-get install -y \
     curl \
+    wget \
+    netcat-traditional \
     gcc \
     && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip first
+RUN pip install --upgrade pip
 
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies with timeout and retry settings
+RUN pip install --no-cache-dir \
+    --timeout 1000 \
+    --retries 5 \
+    --default-timeout=1000 \
+    -r requirements.txt
 
 # Copy the application code
 COPY . .

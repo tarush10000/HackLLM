@@ -1,5 +1,5 @@
-from database import SessionLocal
-from models_db import DocumentChunk
+from app.database import SessionLocal
+from app.models_db import DocumentChunk
 
 # Create a DB session
 db = SessionLocal()
