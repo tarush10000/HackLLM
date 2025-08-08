@@ -36,6 +36,8 @@ async def run_query(request: QueryRequest, authorization: str = Header(...)):
         raise HTTPException(status_code=403, detail="Invalid token")
 
     doc_url = request.documents
+    print(f"🔗 Document URL: {doc_url}")
+    print(f"❓ Questions: {request.questions}")
 
     try:
         # Step 1: Get document metadata for deduplication check
