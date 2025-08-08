@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Add Redis service
+  # Redis service
   redis:
     image: redis:7-alpine
     container_name: redis_cache
@@ -19,7 +19,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Your existing PostgreSQL service
+  # PostgreSQL service
   postgres:
     image: postgres:15
     container_name: postgres_db
@@ -40,7 +40,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Your existing Qdrant service
+  # Qdrant service
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant_db
@@ -61,7 +61,34 @@ services:
       timeout: 5s
       retries: 5
 
-  # Update your FastAPI app service
+  # Database initialization service (runs once)
+  db-init:
+    build: .
+    container_name: db_init
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/document_chunks
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - PYTHONPATH=/app
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - app_network
+    command: >
+      sh -c "
+        echo '🔧 Initializing database...' &&
+        cd /app &&
+        python app/create_tables.py &&
+        echo '✅ Database initialization complete!'
+      "
+    restart: "no"  # Only run once
+
+  # FastAPI app service
   app:
     build: .
     container_name: fastapi_app
@@ -82,16 +109,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     networks:
       - app_network
     restart: unless-stopped
     command: >
       sh -c "
-        echo 'Waiting for services...' &&
-        sleep 30 &&
+        echo '🚀 Starting FastAPI application...' &&
         cd /app &&
-        python -m app.create_tables &&
-        echo 'Starting application...' &&
+        echo '🔧 Initializing Qdrant collection...' &&
+        python -c 'from app.vector_store import ensure_collection_correct; ensure_collection_correct()' &&
+        echo '🎯 Starting server...' &&
         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
       "
     healthcheck:

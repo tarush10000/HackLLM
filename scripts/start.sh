@@ -1,56 +1,69 @@
 #!/bin/bash
 set -e
 
-# Startup script for the application
 echo "🚀 Starting LLM Query System..."
 
-# Function to wait for service
-wait_for_service() {
-    local host=$1
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Function to check if service is running
+check_service() {
+    local service=$1
     local port=$2
-    local service_name=$3
     
-    echo "⏳ Waiting for $service_name to be ready..."
-    while ! nc -z $host $port; do
-        echo "Waiting for $service_name ($host:$port)..."
+    echo -e "${YELLOW}⏳ Checking $service on port $port...${NC}"
+    
+    for i in {1..30}; do
+        if nc -z localhost $port 2>/dev/null; then
+            echo -e "${GREEN}✅ $service is ready!${NC}"
+            return 0
+        fi
+        echo "Waiting for $service... ($i/30)"
         sleep 2
     done
-    echo "✅ $service_name is ready!"
+    
+    echo -e "${RED}❌ $service failed to start${NC}"
+    return 1
 }
 
-# Wait for databases to be ready
-wait_for_service postgres 5432 "PostgreSQL"
-wait_for_service qdrant 6333 "Qdrant"
+# Stop any existing containers
+echo "🛑 Stopping existing containers..."
+docker-compose down
 
-# Additional wait to ensure services are fully initialized
-echo "⏳ Waiting for services to fully initialize..."
+# Start services
+echo "🔧 Starting infrastructure services..."
+docker-compose up -d postgres redis qdrant
+
+# Wait for services to be ready
+check_service "PostgreSQL" 5432
+check_service "Redis" 6379
+check_service "Qdrant" 6333
+
+# Initialize database
+echo "📋 Initializing database..."
+docker-compose run --rm db-init
+
+# Start the main application
+echo "🎯 Starting FastAPI application..."
+docker-compose up -d app
+
+# Wait for app to be ready
+echo "⏳ Waiting for application to start..."
 sleep 10
 
-# Create database tables
-echo "📋 Creating database tables..."
-python app/create_tables.py
+check_service "FastAPI" 8000
 
-# Initialize Qdrant collection with retry logic
-echo "🔧 Initializing Qdrant collection..."
-max_retries=5
-retry_count=0
-
-while [ $retry_count -lt $max_retries ]; do
-    if python -c "from app.vector_store import ensure_collection_correct; ensure_collection_correct()"; then
-        echo "✅ Qdrant collection initialized successfully"
-        break
-    else
-        retry_count=$((retry_count + 1))
-        echo "⚠️ Qdrant initialization failed, retrying... ($retry_count/$max_retries)"
-        sleep 5
-    fi
-done
-
-if [ $retry_count -eq $max_retries ]; then
-    echo "❌ Failed to initialize Qdrant after $max_retries attempts"
-    exit 1
-fi
-
-# Start the application
-echo "🎯 Starting FastAPI application..."
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+echo -e "${GREEN}✅ System is ready!${NC}"
+echo ""
+echo "🌐 FastAPI API: http://localhost:8000"
+echo "📚 API Docs: http://localhost:8000/docs"
+echo "🔍 Qdrant UI: http://localhost:6333/dashboard"
+echo ""
+echo "📊 Check system status:"
+echo "curl http://localhost:8000/health"
+echo ""
+echo "🛑 To stop all services:"
+echo "docker-compose down"
