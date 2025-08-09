@@ -1,6 +1,6 @@
-# app/document_service.py (Simplified - PostgreSQL Only Check)
+# app/document_service.py (OPTIMIZED - Fast deduplication for large files)
 """
-Document processing service with simple PostgreSQL-only deduplication.
+Document processing service with smart deduplication based on file size.
 """
 import asyncio
 import uuid
@@ -36,10 +36,10 @@ class DocumentService:
         
         # Configuration for different file sizes with rate-limit-aware batching
         self.size_configs = {
-            "small": {"max_size": 10 * 1024 * 1024, "timeout": 30, "chunk_batch": max_safe_batch},
-            "medium": {"max_size": 50 * 1024 * 1024, "timeout": 120, "chunk_batch": med_safe_batch},  
-            "large": {"max_size": 200 * 1024 * 1024, "timeout": 300, "chunk_batch": min_safe_batch},
-            "xlarge": {"max_size": float('inf'), "timeout": 600, "chunk_batch": min_safe_batch}
+            "small": {"max_size": 10 * 1024 * 1024, "timeout": 30, "chunk_batch": max_safe_batch, "need_preview": True},
+            "medium": {"max_size": 50 * 1024 * 1024, "timeout": 120, "chunk_batch": med_safe_batch, "need_preview": True},  
+            "large": {"max_size": 200 * 1024 * 1024, "timeout": 300, "chunk_batch": min_safe_batch, "need_preview": False},
+            "xlarge": {"max_size": float('inf'), "timeout": 600, "chunk_batch": min_safe_batch, "need_preview": False}
         }
     
     def get_config_for_size(self, file_size: int) -> dict:
@@ -73,30 +73,77 @@ class DocumentService:
     
     async def check_document_exists(self, file_name: str, file_size: int, first_words: str) -> Optional[str]:
         """
-        SIMPLIFIED: Only check PostgreSQL for document existence.
-        Trust that if it's in PostgreSQL, it should be in Qdrant too.
-        Returns document_id if exists, None otherwise.
+        SMART DEDUPLICATION: Use different strategies based on file size.
+        - Small/Medium files: Use content hash with first 20 words
+        - Large/XLarge files: Use filename + size only for speed
         """
-        content_hash = hash_pdf_metadata(file_name, file_size, first_words)
+        config = self.get_config_for_size(file_size)
         
+        if config["need_preview"]:
+            # Small/medium files: Use full hash with content preview
+            print(f"🔍 Small/medium file: Using content-based deduplication")
+            content_hash = hash_pdf_metadata(file_name, file_size, first_words)
+            return await self._check_by_content_hash(content_hash, file_name)
+        else:
+            # Large files: Use filename + size only for speed
+            print(f"🚀 Large file: Using fast filename+size deduplication")
+            return await self._check_by_filename_size(file_name, file_size)
+    
+    async def _check_by_content_hash(self, content_hash: str, file_name: str) -> Optional[str]:
+        """Check document existence using content hash (for small/medium files)"""
         def db_operation():
             db = SessionLocal()
             try:
-                # Check if document with this hash already exists in PostgreSQL
                 existing_doc = db.query(Document).filter(Document.content_hash == content_hash).first()
                 
                 if existing_doc:
-                    print(f"✅ Document found in PostgreSQL: {existing_doc.id}")
+                    print(f"✅ Document found by content hash: {existing_doc.id}")
                     print(f"📅 Processed at: {existing_doc.processed_at}")
                     print(f"📊 Total chunks: {existing_doc.total_chunks}")
-                    print(f"📄 File: {existing_doc.file_name}")
                     return existing_doc.id
                 
-                print(f"📝 New document detected: {file_name} (hash: {content_hash[:12]}...)")
+                print(f"📝 New document detected by content: {file_name}")
                 return None
                 
             except Exception as e:
-                print(f"❌ Error checking PostgreSQL: {e}")
+                print(f"❌ Error checking by content hash: {e}")
+                return None
+            finally:
+                db.close()
+        
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, db_operation)
+    
+    async def _check_by_filename_size(self, file_name: str, file_size: int) -> Optional[str]:
+        """Check document existence using filename + size only (for large files)"""
+        def db_operation():
+            db = SessionLocal()
+            try:
+                # For large files, match by filename and size (within 1% tolerance for size)
+                size_tolerance = file_size * 0.01  # 1% tolerance
+                min_size = file_size - size_tolerance
+                max_size = file_size + size_tolerance
+                
+                existing_doc = db.query(Document).filter(
+                    Document.file_name == file_name,
+                    Document.file_size >= min_size,
+                    Document.file_size <= max_size
+                ).first()
+                
+                if existing_doc:
+                    print(f"✅ Large file found by name+size: {existing_doc.id}")
+                    print(f"📄 File: {existing_doc.file_name}")
+                    print(f"📏 Size match: {existing_doc.file_size:,} ≈ {file_size:,}")
+                    print(f"📅 Processed at: {existing_doc.processed_at}")
+                    print(f"📊 Total chunks: {existing_doc.total_chunks}")
+                    print(f"⚡ FAST MATCH - Skipping content extraction!")
+                    return existing_doc.id
+                
+                print(f"📝 New large document detected: {file_name} ({file_size:,} bytes)")
+                return None
+                
+            except Exception as e:
+                print(f"❌ Error checking by filename+size: {e}")
                 return None
             finally:
                 db.close()
@@ -105,7 +152,7 @@ class DocumentService:
         return await loop.run_in_executor(None, db_operation)
     
     async def get_document_preview(self, doc_url: str) -> Tuple[str, int, str]:
-        """Get document metadata with progressive timeout handling."""
+        """Get document metadata with smart preview strategy based on file size."""
         file_name = self.extract_filename_from_url(doc_url)
         
         print(f"🔍 Getting document info for: {file_name}")
@@ -115,26 +162,45 @@ class DocumentService:
             config = self.get_config_for_size(file_size)
             
             print(f"📏 File size: {file_size:,} bytes ({config['type']} file)")
-            print(f"⏱️ Using timeout: {config['timeout']}s")
+            print(f"⏱️ Timeout: {config['timeout']}s, Preview needed: {config['need_preview']}")
             
         except Exception as e:
             print(f"⚠️ Could not get file size via HEAD request: {e}")
             file_size = 25 * 1024 * 1024  # 25MB assumption
             config = self.get_config_for_size(file_size)
         
-        try:
-            first_words = await self._get_document_preview_robust(doc_url, config, file_size)
-            
-            print(f"📄 Document preview - Name: {file_name}, Size: {file_size:,} bytes")
-            print(f"📝 Preview: {first_words[:100]}...")
-            return file_name, file_size, first_words
-            
-        except Exception as e:
-            print(f"❌ Error getting document preview: {e}")
-            url_hash = hashlib.md5(doc_url.encode()).hexdigest()[:8]
-            fallback_preview = f"large_file_{file_size}_{url_hash}_{file_name}"
-            print(f"🔄 Using fallback preview: {fallback_preview}")
-            return file_name, file_size, fallback_preview
+        # Smart preview strategy based on file size
+        if config["need_preview"]:
+            # Small/medium files: Extract actual preview
+            try:
+                first_words = await self._get_document_preview_robust(doc_url, config, file_size)
+                print(f"📄 Got content preview for {config['type']} file")
+            except Exception as e:
+                print(f"❌ Error getting content preview: {e}")
+                first_words = self._generate_fallback_preview(doc_url, file_name, file_size)
+        else:
+            # Large files: Skip expensive preview, use fast fallback
+            print(f"⚡ LARGE FILE: Skipping content preview for speed")
+            first_words = self._generate_fast_preview(doc_url, file_name, file_size)
+        
+        print(f"📄 Document preview - Name: {file_name}, Size: {file_size:,} bytes")
+        print(f"📝 Preview strategy: {'content' if config['need_preview'] else 'fast'}")
+        return file_name, file_size, first_words
+    
+    def _generate_fast_preview(self, doc_url: str, file_name: str, file_size: int) -> str:
+        """Generate fast preview for large files without content extraction"""
+        url_hash = hashlib.md5(doc_url.encode()).hexdigest()[:8]
+        timestamp = hashlib.md5(f"{file_name}_{file_size}".encode()).hexdigest()[:8]
+        fast_preview = f"large_file_{file_size}_{url_hash}_{timestamp}_{file_name}"
+        print(f"⚡ Generated fast preview: {fast_preview[:50]}...")
+        return fast_preview
+    
+    def _generate_fallback_preview(self, doc_url: str, file_name: str, file_size: int) -> str:
+        """Generate fallback preview when content extraction fails"""
+        url_hash = hashlib.md5(doc_url.encode()).hexdigest()[:8]
+        fallback_preview = f"fallback_{file_size}_{url_hash}_{file_name}"
+        print(f"🔄 Generated fallback preview: {fallback_preview[:50]}...")
+        return fallback_preview
     
     async def _get_file_size_via_head(self, url: str) -> int:
         """Get file size using HEAD request without downloading"""
@@ -164,43 +230,19 @@ class DocumentService:
             return 25 * 1024 * 1024  # 25MB
     
     async def _get_document_preview_robust(self, doc_url: str, config: dict, file_size: int) -> str:
-        """Get document preview with robust error handling"""
-        timeout = aiohttp.ClientTimeout(total=config['timeout'])
-        
-        if config['type'] in ['large', 'xlarge']:
-            return await self._get_preview_streaming(doc_url, timeout)
-        else:
-            return await self._get_preview_standard(doc_url, timeout)
-    
-    async def _get_preview_streaming(self, doc_url: str, timeout: aiohttp.ClientTimeout) -> str:
-        """Stream large files and extract preview from first page only"""
-        print(f"📥 Using streaming preview for large file...")
+        """Get document preview with robust error handling (only for small/medium files)"""
+        timeout = aiohttp.ClientTimeout(total=min(config['timeout'], 60))  # Cap at 60s for preview
         
         try:
             async for page_text in extract_text_generator_async(doc_url):
                 first_words = get_first_n_words(clean_text(page_text), 20)
                 if first_words and len(first_words.strip()) > 10:
-                    print(f"✅ Got preview from first page streaming")
+                    print(f"✅ Got content preview from first page")
                     return first_words
                 break
                 
         except Exception as e:
-            print(f"⚠️ Streaming preview failed: {e}")
-            raise
-        
-        return f"no_preview_large_file_{len(doc_url)}"
-    
-    async def _get_preview_standard(self, doc_url: str, timeout: aiohttp.ClientTimeout) -> str:
-        """Standard preview method for smaller files"""
-        try:
-            async for page_text in extract_text_generator_async(doc_url):
-                first_words = get_first_n_words(clean_text(page_text), 20)
-                if first_words:
-                    return first_words
-                break
-                
-        except Exception as e:
-            print(f"⚠️ Standard preview failed: {e}")
+            print(f"⚠️ Content preview failed: {e}")
             raise
         
         return f"no_preview_{len(doc_url)}"
@@ -211,8 +253,14 @@ class DocumentService:
         Returns the document_id.
         """
         doc_id = str(uuid.uuid4())
-        content_hash = hash_pdf_metadata(file_name, file_size, first_words)
         config = self.get_config_for_size(file_size)
+        
+        # Generate appropriate hash based on file size
+        if config["need_preview"]:
+            content_hash = hash_pdf_metadata(file_name, file_size, first_words)
+        else:
+            # For large files, use simpler hash without content
+            content_hash = hashlib.md5(f"{file_name}_{file_size}_{first_words}".encode()).hexdigest()
         
         print(f"🔄 Processing {config['type']} document: {doc_id}")
         print(f"⚙️ Config: timeout={config['timeout']}s, batch_size={config['chunk_batch']}")
@@ -414,7 +462,11 @@ class DocumentService:
                     "total_documents": total_docs,
                     "total_chunks": total_chunks,
                     "avg_chunks_per_doc": round(total_chunks / total_docs, 2) if total_docs > 0 else 0,
-                    "size_distribution": size_stats
+                    "size_distribution": size_stats,
+                    "deduplication_strategy": {
+                        "small_medium": "content-based (with preview)",
+                        "large_xlarge": "filename+size only (fast)"
+                    }
                 }
             except Exception as e:
                 print(f"Error getting stats: {e}")

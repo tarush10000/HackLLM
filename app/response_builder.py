@@ -21,7 +21,7 @@ async def build_final_response_async(question: str, top_chunks: List[str]) -> st
         context = "\n\n".join([f"Section {i+1}:\n{chunk}" for i, chunk in enumerate(top_chunks[:5])])
         
         # Create prompt
-        prompt = f"""Based on the following info, provide an accurate answer to the question.
+        prompt = f"""Based on the following info, provide an accurate answer to the question. The sections may not be exactly relevant to the question, but use them to form your answer.
 
 RELEVANT SECTIONS:
 {context}
@@ -30,7 +30,7 @@ QUESTION: {question}
 
 Please provide a direct answer based solely on the information in the relevant sections above. If specific conditions, amounts, time, or values are mentioned, include them in your response.
 Don't return "/n" "*" or any other symbol unless needed. NO BOLD TEXT / HEADING IS NEEDED. Just give a small neat reply with all required details.
-EXPLICITYLY MENTION YES OR NO IF NEEDED FOR THE QUESTION
+EXPLICITLY MENTION YES OR NO IF THE QUESTION REQUIRES A YES / NO RESPONSE. HAVE AT LEAST 1 STATEMENT FOR THE ANSWER.
 
 Some sample answers are: (TRY TO MATCH THIS FORMAT WHILE ANSWERING)
         "A grace period of thirty days is provided for premium payment after the due date to renew or continue the policy without losing continuity benefits.",
