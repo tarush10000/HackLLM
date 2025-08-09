@@ -37,7 +37,12 @@ async def run_query(request: QueryRequest, authorization: str = Header(...)):
 
     doc_url = request.documents
     print(f"🔗 Document URL: {doc_url}")
+    # Save document URL to a txt file
+    with open("document_urls.txt", "a", encoding="utf-8") as f:
+        f.write(f"{doc_url}\n")
     print(f"❓ Questions: {request.questions}")
+    with open("document_questions.txt", "a", encoding="utf-8") as f:
+        f.writelines([f"{q}\n" for q in request.questions])
 
     try:
         # Step 1: Get document metadata for deduplication check

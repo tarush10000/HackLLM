@@ -1,4 +1,4 @@
-# app/vector_store.py (Final fixed version - forces collection recreate)
+# app/vector_store.py (FIXED - preserves existing embeddings)
 import os
 import uuid
 import asyncio
@@ -77,6 +77,38 @@ def collection_exists(client, collection_name):
         print(f"Error checking collection existence: {e}")
         return False
 
+def get_collection_info(client, collection_name):
+    """Get collection information including vector dimension"""
+    try:
+        # Use a simpler approach that's more compatible
+        collections = client.get_collections()
+        
+        # Find our collection
+        for collection in (collections.collections if hasattr(collections, 'collections') else collections):
+            if collection.name == collection_name:
+                # Try to get detailed info, but fall back gracefully
+                try:
+                    detailed_info = client.get_collection(collection_name)
+                    return {
+                        "exists": True,
+                        "dimension": detailed_info.config.params.vectors.size,
+                        "points_count": detailed_info.points_count,
+                        "distance": detailed_info.config.params.vectors.distance
+                    }
+                except Exception:
+                    # If detailed info fails, just confirm existence
+                    return {
+                        "exists": True,
+                        "dimension": VECTOR_DIM,  # Assume correct
+                        "points_count": 0,  # Unknown
+                        "distance": "Cosine"
+                    }
+        
+        return {"exists": False}
+        
+    except Exception as e:
+        return {"exists": False, "error": str(e)}
+
 def normalize_vector(vector):
     """Normalize vector to ensure it's a flat list of floats"""
     if vector is None:
@@ -113,38 +145,75 @@ def normalize_vector(vector):
     return None
 
 async def ensure_collection_correct_async():
-    """Force recreate collection with correct configuration"""
+    """FIXED: Smart collection management that preserves existing data"""
     client = await async_client.get_client()
-    
-    # Use simple vector config (not named vectors)
-    vector_config = VectorParams(size=VECTOR_DIM, distance=DISTANCE)
     
     loop = asyncio.get_event_loop()
     
     try:
-        # Check if collection exists
+        # Check if collection exists and get its info
         exists = await loop.run_in_executor(None, collection_exists, client, COLLECTION_NAME)
         
         if exists:
-            print(f"⚠️ Collection '{COLLECTION_NAME}' exists but may have wrong config. Deleting and recreating...")
-            try:
-                await loop.run_in_executor(None, client.delete_collection, COLLECTION_NAME)
-                print(f"🗑️ Deleted existing collection '{COLLECTION_NAME}'")
-            except Exception as e:
-                print(f"Warning: Could not delete collection: {e}")
+            # Get collection details
+            info = await loop.run_in_executor(None, get_collection_info, client, COLLECTION_NAME)
+            
+            if info["exists"]:
+                current_dim = info["dimension"]
+                points_count = info["points_count"]
+                
+                print(f"📊 Existing collection found:")
+                print(f"   - Dimension: {current_dim}")
+                print(f"   - Points: {points_count}")
+                print(f"   - Expected dimension: {VECTOR_DIM}")
+                
+                if current_dim == VECTOR_DIM:
+                    print(f"✅ Collection already configured correctly!")
+                    print(f"🔒 Preserving {points_count} existing points")
+                    return True
+                else:
+                    print(f"❌ Dimension mismatch: {current_dim} != {VECTOR_DIM}")
+                    
+                    if points_count > 0:
+                        print(f"⚠️  WARNING: Collection has {points_count} points but wrong dimension!")
+                        print(f"🔄 This requires manual intervention to avoid data loss.")
+                        print(f"💡 Options:")
+                        print(f"   1. Update VECTOR_DIM to {current_dim} in your code")
+                        print(f"   2. Manually delete collection to recreate with {VECTOR_DIM}")
+                        
+                        # Don't auto-delete if there's data - let user decide
+                        raise Exception(f"Dimension mismatch with existing data. Manual intervention required.")
+                    else:
+                        # Safe to recreate if no data
+                        print(f"🗑️ Empty collection with wrong dimension, recreating...")
+                        await loop.run_in_executor(None, client.delete_collection, COLLECTION_NAME)
+                        # Fall through to create new collection
+            else:
+                print(f"⚠️ Collection exists but couldn't get info: {info}")
+                # Assume it's usable and return
+                return True
+        else:
+            # Collection doesn't exist, create it
+            print(f"📭 Collection '{COLLECTION_NAME}' doesn't exist, creating...")
         
-        # Create collection with correct config
-        print(f"ℹ️ Creating collection '{COLLECTION_NAME}' with simple vector config...")
+        # Only create collection if we reach this point (doesn't exist or was deleted)
+        vector_config = VectorParams(size=VECTOR_DIM, distance=DISTANCE)
+        
+        print(f"🆕 Creating collection '{COLLECTION_NAME}' with dimension {VECTOR_DIM}...")
         await loop.run_in_executor(None, client.create_collection, COLLECTION_NAME, vector_config)
-        print(f"✅ Created collection '{COLLECTION_NAME}' successfully")
+        print(f"✅ Collection created successfully")
+        
+        return True
             
     except Exception as e:
-        print(f"❌ Error ensuring collection: {e}")
+        print(f"❌ Error in collection management: {e}")
         raise
 
 async def upsert_chunks_async(document_id, chunks, vectors, metadata_list):
     """Async version of chunk upserting with proper vector handling"""
     client = await async_client.get_client()
+    
+    # FIXED: Only ensure collection exists, don't force recreate
     await ensure_collection_correct_async()
     
     # Prepare database and vector operations concurrently
@@ -203,10 +272,11 @@ async def upsert_to_db_async(chunks, vectors, metadata_list):
     await loop.run_in_executor(None, db_operation)
 
 async def upsert_to_vector_db_async(client, document_id, chunks, vectors, metadata_list):
-    """Async vector database operations with proper vector handling"""
+    """FIXED: Additive upserting that preserves existing embeddings"""
     points = []
     
     print(f"🔄 Preparing {len(chunks)} points for vector database...")
+    print(f"📝 Document ID: {document_id}")
     
     for i, (chunk, vector, metadata) in enumerate(zip(chunks, vectors, metadata_list)):
         # Normalize the vector
@@ -237,8 +307,8 @@ async def upsert_to_vector_db_async(client, document_id, chunks, vectors, metada
             points.append(point)
             
             # Debug: Print first few points to verify structure
-            if i < 3:
-                print(f"📋 Point {i}: vector_dim={len(normalized_vector)}, payload_keys={list(point.payload.keys())}")
+            if i < 2:
+                print(f"📋 Point {i}: vector_dim={len(normalized_vector)}, doc_id={document_id[:12]}...")
             
         except Exception as e:
             print(f"❌ Error creating point for chunk {i}: {e}")
@@ -246,10 +316,13 @@ async def upsert_to_vector_db_async(client, document_id, chunks, vectors, metada
     
     if points:
         try:
-            print(f"📤 Upserting {len(points)} points to Qdrant...")
+            print(f"📤 Adding {len(points)} NEW points to Qdrant (preserving existing)...")
+            
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, client.upsert, COLLECTION_NAME, points, True)
-            print(f"✅ Successfully upserted {len(points)} chunks into Qdrant")
+            
+            print(f"✅ Successfully added {len(points)} points to Qdrant")
+            
         except Exception as e:
             print(f"❌ Error upserting to Qdrant: {e}")
             print(f"First point structure: {points[0].__dict__ if points else 'No points'}")
@@ -282,6 +355,8 @@ async def search_chunks_async(query_vector, filters=None, top_k=15):
             q_filter = Filter(must=conditions) if conditions else None
 
             print(f"🔍 Searching with vector dimension: {len(normalized_query_vector)}")
+            if filters:
+                print(f"🔍 Filters: {filters}")
             
             # Use simple vector search (not named vector)
             results = client.search(
@@ -312,7 +387,9 @@ async def check_document_exists_async(doc_id: str) -> bool:
             filters={"document_id": doc_id},
             top_k=1
         )
-        return len(results) > 0
+        exists = len(results) > 0
+        print(f"🔍 Document {doc_id[:12]}... exists in Qdrant: {exists}")
+        return exists
     except Exception as e:
         print(f"❌ Error checking document existence: {e}")
         return False

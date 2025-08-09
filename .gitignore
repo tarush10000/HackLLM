@@ -3,3 +3,5 @@
 __pycache__/
 *.pyc
 venv
+document_questions.txt
+document_urls.txt
